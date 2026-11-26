@@ -150,7 +150,7 @@ Type the keyword (default: usage), or set a hotkey on the Hotkey trigger. usage 
 • Activity: a 13-week heatmap of Claude Code usage, with your current streak 🔥
 • Cost: what the same tokens would cost at Claude API list prices (an estimate; your plan is not billed this way)
 
-Switch between Claude and Codex with the tabs, ⌘1 / ⌘2 or ⇥ (the last one you viewed opens next time).
+Switch between enabled providers with the tabs, ⌘1 / ⌘2 or ⇥. Choose a fixed order, one provider, or the last viewed tab in Configure Workflow. Optional cycle dates enable a subscription-period subtotal.
 ↩ opens the usage settings page · ⌘R refreshes (it also refreshes every 30s while open) · hover a day for its cost
 
 Where the numbers come from
@@ -163,6 +163,8 @@ Limits are as fresh as your last Claude Code message (usage from claude.ai or th
 Activity and cost are read from Claude Code transcripts in ~/.claude/projects (every API response records its model and token counts). Requests are de-duplicated across resumed and forked sessions, and priced with input, output, cache-write (5m / 1h) and cache-read rates per model, fast mode and web searches included.
 
 Codex: limits, activity and cost all come from Codex's own session files in ~/.codex/sessions (each API response records its tokens, and the plan limits ride along), priced at OpenAI API rates. Limits are as of your last Codex request. Compressed sessions (.jsonl.zst) need zstd: brew install zstd.
+
+Enable Live account limits to query the signed-in CLIs in addition to local data.
 
 Requires /usr/bin/python3 (ships with macOS Command Line Tools).</string>
 	<key>uidata</key>
@@ -267,11 +269,155 @@ Requires /usr/bin/python3 (ships with macOS Command Line Tools).</string>
 			<key>variable</key>
 			<string>codex_home</string>
 		</dict>
+		<dict>
+			<key>type</key>
+			<string>popupbutton</string>
+			<key>label</key>
+			<string>Show providers</string>
+			<key>variable</key>
+			<string>usage_providers</string>
+			<key>description</key>
+			<string>Select the providers and their display order, from left to right. The first tab opens by default.</string>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string>remember</string>
+				<key>pairs</key>
+				<array>
+					<array>
+						<string>Both, reopen last tab</string>
+						<string>remember</string>
+					</array>
+					<array>
+						<string>Codex only</string>
+						<string>codex</string>
+					</array>
+					<array>
+						<string>Claude Code only</string>
+						<string>claude</string>
+					</array>
+					<array>
+						<string>Codex first, then Claude Code</string>
+						<string>codex_claude</string>
+					</array>
+					<array>
+						<string>Claude Code first, then Codex</string>
+						<string>claude_codex</string>
+					</array>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>YYYY-MM-DD</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>First day of your current ChatGPT subscription cycle.</string>
+			<key>label</key>
+			<string>Codex subscription cycle start</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>subscription_cycle_start</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>YYYY-MM-DD</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>Renewal or expiration date. Activity on this date is outside the cycle.</string>
+			<key>label</key>
+			<string>Codex subscription cycle end</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>subscription_cycle_end</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>YYYY-MM-DD</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>First day of your current Claude subscription cycle.</string>
+			<key>label</key>
+			<string>Claude subscription cycle start</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>claude_subscription_cycle_start</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>YYYY-MM-DD</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>Renewal or expiration date. Activity on this date is outside the cycle.</string>
+			<key>label</key>
+			<string>Claude subscription cycle end</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>claude_subscription_cycle_end</string>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>checkbox</string>
+			<key>variable</key>
+			<string>live_limits</string>
+			<key>label</key>
+			<string>Live account limits</string>
+			<key>description</key>
+			<string>Ask the installed CLIs for current limits. They may contact your account provider. Local usage is available with this option off.</string>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<false/>
+				<key>text</key>
+				<string>Query account limits when refreshing</string>
+			</dict>
+		</dict>
 	</array>
 	<key>variablesdontexport</key>
-	<array/>
+	<array>
+		<string>subscription_cycle_start</string>
+		<string>subscription_cycle_end</string>
+		<string>claude_subscription_cycle_start</string>
+		<string>claude_subscription_cycle_end</string>
+	</array>
 	<key>version</key>
-	<string>1.0.0</string>
+	<string>1.1.0-rc.1</string>
 	<key>webaddress</key>
 	<string></string>
 </dict>

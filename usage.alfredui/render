@@ -1,17 +1,12 @@
 #!/usr/bin/python3
-"""Alfred UI script for Claude Usage: prints JSON actions that fill in the UI.
-
-Usage: render preload|pulse|refresh|switch|toggle [claude|codex]
-  preload  build the activity heatmap and fill every label (runs before the UI is shown)
-  pulse    refresh labels, bars and heatmap colours in place (every 30s while open, and on ⌘R)
-  switch   show the given tool; toggle shows the other one
-The tool defaults to $tool, the UI variable remembering the last tab.
-"""
+"""Render the selected providers or open the active provider’s usage page."""
 from __future__ import annotations
 
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,13 +14,8 @@ from typing import Dict, List, Optional
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import codex  # noqa: E402
-import usage  # noqa: E402
-
-TOOLS = ("claude", "codex")
-TITLES = {"claude": "Claude usage", "codex": "Codex usage"}
-USAGE_URLS = {"claude": "https://claude.ai/settings/usage", "codex": codex.USAGE_URL}
-LIMITS_SOURCE = {"claude": "the status line", "codex": "your last Codex session"}
+import codex
+import usage
 
 WEEKS = 13
 CELL = 15
@@ -34,7 +24,7 @@ GRID_W = WEEKS * CELL + (WEEKS - 1) * GAP
 GRID_H = 7 * CELL + 6 * GAP
 DAY_W, DAY_GAP = 26, 4  # weekday labels column, left of the grid
 MONTH_H, MONTH_GAP = 13, 3  # month labels row, above the grid
-HEAT_W = DAY_W + DAY_GAP + GRID_W  # keep in sync with the "heatmap" placeholder in ui.json
+HEAT_W = DAY_W + DAY_GAP + GRID_W
 HEAT_H = MONTH_H + MONTH_GAP + GRID_H
 WEEKDAY_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""]  # rows run Sunday to Saturday
 AXIS_FONT = {"size": 10}
@@ -100,47 +90,42 @@ def window_label(minutes: Optional[int]) -> str:
     if minutes and minutes % 1440 == 0:
         return f"{minutes // 1440}-day"
     if minutes:
-        return f"{round(minutes / 60)}-hour"
+        return f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
     return "Limit"
 
 
-def limit_rows(limits: Optional[dict], now: float, missing: str) -> Dict[str, dict]:
-    """Top row: the shorter window (a day or less), bottom row: the longer one."""
+def limits_view(limits: Optional[dict], now: float) -> dict:
     windows = (limits or {}).get("windows") or []
-    short = [w for w in windows if (w.get("minutes") or 0) <= 1440]
-    long = [w for w in windows if (w.get("minutes") or 0) > 1440]
-    ids = {}
-    for prefix, found, fallback in (("five", short, "5-hour session"), ("week", long, "Weekly")):
-        if found:
-            w = min(found, key=lambda x: x.get("minutes") or 0) if prefix == "five" else max(found, key=lambda x: x.get("minutes") or 0)
-            ids.update(limit_row(prefix, window_label(w.get("minutes")), w, now))
-        else:
-            ids.update(limit_row(prefix, fallback, None, now, missing if not windows else "not reported"))
-    return ids
+    components = []
+    for window in sorted(windows, key=lambda w: w.get("minutes") or 0):
+        components.extend(limit_row(window, now))
+    if not windows:
+        components.append({"type": "label", "font": {"size": 13}, "text": "No plan limits reported"})
+    return {
+        "id": "planLimits", "type": "view", "layout": "inline",
+        "direction": "vertical", "spacing": 8, "components": components,
+    }
 
 
-def limit_row(prefix: str, label: str, window: Optional[dict], now: float, missing: str = "no data yet") -> Dict[str, dict]:
-    if not window or window.get("used_percentage") is None:
-        return {
-            f"{prefix}Label": {"text": f"{label}: {missing}"},
-            f"{prefix}Bar": {"progress": 0.0, "colour": "systemGreenColor"},
-        }
+def limit_row(window: dict, now: float) -> List[dict]:
+    label = window.get("label") or window_label(window.get("minutes"))
     pct = float(window["used_percentage"])
     resets = window.get("resets_at")
     if resets and resets <= now:
-        # The window rolled over since Claude Code last reported it.
-        text = f"{label}: 0% used (reset {ago(now - resets)})"
-        pct = 0.0
-    elif window.get("limited") and resets:
+        return [{"type": "label", "font": {"size": 13},
+                 "text": f"{label}: awaiting usage after reset",
+                 "tooltip": f"Previous window used {pct:.0f}% and reset {ago(now - resets)}"}]
+    elif resets and window.get("limited"):
         text = f"{label}: limit reached, resets in {duration(resets - now)}"
     elif resets:
         text = f"{label}: {pct:.0f}% used, resets in {duration(resets - now)}"
     else:
         text = f"{label}: {pct:.0f}% used"
-    return {
-        f"{prefix}Label": {"text": text},
-        f"{prefix}Bar": {"progress": max(0.0, min(pct / 100.0, 1.0)), "colour": bar_colour(pct)},
-    }
+    return [
+        {"type": "label", "text": text, "font": {"size": 13}},
+        {"type": "progress", "style": "linear", "thickness": 8, "background": TRACK,
+         "progress": max(0.0, min(pct / 100.0, 1.0)), "colour": bar_colour(pct)},
+    ]
 
 
 # ---------------------------------------------------------------- activity
@@ -149,6 +134,48 @@ def grid_start(today: date) -> date:
     """Sunday that starts the first of the WEEKS columns (the last column is this week)."""
     this_sunday = today - timedelta(days=(today.weekday() + 1) % 7)
     return this_sunday - timedelta(weeks=WEEKS - 1)
+
+
+def cost_label(cost: float, count: int, unpriced: int, compact: bool = False) -> str:
+    if unpriced and unpriced == count:
+        return "Unpriced"
+    amount = money(cost) if compact else f"${cost:,.2f}"
+    return amount + ("+" if unpriced else "")
+
+
+def period_usage(days: Dict[date, usage.DailyUsage], start: date, today: date) -> dict:
+    period = [value for day, value in days.items() if start <= day <= today]
+    count = sum(v.count for v in period)
+    unpriced = sum(v.unpriced for v in period)
+    cost = cost_label(sum(v.cost for v in period), count, unpriced)
+    detail = f" · {unpriced:,} requests without a model price" if unpriced else ""
+    return {
+        "text": f"{cost} · {count:,} req",
+        "tooltip": f"{start:%Y-%m-%d} through {today:%Y-%m-%d} · estimated API cost and requests{detail}",
+    }
+
+
+def subscription_usage(days: Dict[date, usage.DailyUsage], today: date, provider: str) -> dict:
+    prefix = "claude_" if provider == "claude" else ""
+    start_text = os.environ.get(prefix + "subscription_cycle_start", "").strip()
+    end_text = os.environ.get(prefix + "subscription_cycle_end", "").strip()
+    settings = "Set the subscription cycle dates in Configure Workflow"
+    if not start_text or not end_text:
+        return {"text": "Dates needed", "tooltip": settings}
+    try:
+        start = date.fromisoformat(start_text)
+        end = date.fromisoformat(end_text)
+    except ValueError:
+        return {"text": "Invalid dates", "tooltip": f"{settings} using YYYY-MM-DD"}
+    if start >= end:
+        return {"text": "Invalid dates", "tooltip": "The start date must be before the end date"}
+    if today < start:
+        return {"text": "Cycle upcoming", "tooltip": f"Starts {start:%Y-%m-%d}"}
+    if today >= end:
+        return {"text": "Cycle ended", "tooltip": f"Ended {end:%Y-%m-%d}. {settings} when a new cycle begins"}
+    result = period_usage(days, start, today)
+    result["tooltip"] += f" · cycle ends {end:%Y-%m-%d}"
+    return result
 
 
 def levels_for(costs: List[float]):
@@ -160,10 +187,10 @@ def levels_for(costs: List[float]):
     return lambda c: 1 + sum(c > q for q in qs)
 
 
-def cells(days: Dict[date, List[float]], today: date) -> List[dict]:
+def cells(days: Dict[date, usage.DailyUsage], today: date) -> List[dict]:
     start = grid_start(today)
     window = [start + timedelta(days=i) for i in range(WEEKS * 7)]
-    level = levels_for([days[d][0] for d in window if d in days and d <= today])
+    level = levels_for([days[d].cost for d in window if d in days and d <= today])
     out = [None] * (WEEKS * 7)
     for i, d in enumerate(window):
         row, col = i % 7, i // 7
@@ -172,9 +199,10 @@ def cells(days: Dict[date, List[float]], today: date) -> List[dict]:
             cell["background"] = FUTURE
             cell["tooltip"] = ""
         elif d in days:
-            cost, n = days[d]
+            usage = days[d]
+            cost, n = usage.cost, usage.count
             cell["background"] = LEVELS[level(cost) - 1]
-            cell["tooltip"] = f"{d:%a}, {short_date(d)} · {money(cost)} · {n:,} request{'s' if n != 1 else ''}"
+            cell["tooltip"] = f"{d:%a}, {short_date(d)} · {cost_label(cost, n, usage.unpriced, compact=True)} · {n:,} request{'s' if n != 1 else ''}"
         else:
             cell["background"] = EMPTY
             cell["tooltip"] = f"{d:%a}, {short_date(d)} · no activity"
@@ -258,105 +286,197 @@ def heatmap_view(cell_props: List[dict], today: date) -> dict:
 
 # ---------------------------------------------------------------- main
 
-def tab(selected: bool) -> dict:
-    if selected:
-        return {"bordered": True, "contenttintcolour": None, "font": {"size": 12, "weight": "semibold"}}
-    return {"bordered": False, "contenttintcolour": "secondaryLabelColor", "font": {"size": 12, "weight": "regular"}}
+NAMES = {"codex": "Codex", "claude": "Claude Code"}
+URLS = {"codex": "https://chatgpt.com/codex/settings/usage", "claude": "https://claude.ai/settings/usage"}
+ORDERS = {"codex": ("codex",), "claude": ("claude",), "codex_claude": ("codex", "claude"),
+          "claude_codex": ("claude", "codex")}
 
 
-def build(mode: str, tool: str) -> dict:
-    now = usage.now()
-    today = datetime.fromtimestamp(now).date()
-
-    ids: Dict[str, dict] = {
-        "title": {"text": TITLES[tool]},
-        "tabClaude": tab(tool == "claude"),
-        "tabCodex": tab(tool == "codex"),
-    }
-
-    zstd_missing = False
-    if tool == "codex":
-        requests, limits, zstd_missing = codex.scan()
-        ids["title"]["tooltip"] = f"{limits['plan'].title()} plan" if limits and limits.get("plan") else ""
-        ids.update(limit_rows(limits, now, "no Codex sessions yet"))
+def provider_panel(provider: str) -> dict:
+    name = NAMES[provider]
+    live = os.environ.get("live_limits", "").lower() in ("1", "true", "yes")
+    if provider == "codex":
+        requests, recorded, missing = codex.scan()
+        limits = (codex.account_limits(codex.codex_home()) if live else None) or recorded
+        if limits and limits.get("updated_at"):
+            updated = ago(time.time() - limits["updated_at"])
+            source = "Codex account" if limits.get("source") == "account" else "local session"
+            footer = f"Limits from {source} · updated {updated} · cost is an API-price estimate"
+        else:
+            footer = "No limits recorded yet · cost is an API-price estimate"
     else:
         cfg = usage.config_dir()
         requests, rejections = usage.collect(cfg)
-        limits = usage.load_limits(cfg, rejections, now)
-        ids["title"]["tooltip"] = ""
-        ids.update(limit_rows(limits, now, "no data yet"))
+        limits = usage.account_limits(cfg) if live else None
+        if limits and limits.get("windows"):
+            footer = "Limits from Claude Code · cost is an API-price estimate"
+        else:
+            limits = usage.load_limits(cfg, rejections)
+            updated = (limits or {}).get("updated_at")
+            footer = (f"Local Claude limits · updated {ago(time.time() - updated)}" if updated
+                      else "Local Claude activity") + " · cost is an API-price estimate"
+        missing = False
 
+    if missing:
+        footer += " · some local logs could not be read"
+    now = time.time()
+    today = datetime.fromtimestamp(now).date()
+    ids = {"title": {"text": name + " Usage", "tooltip": (limits or {}).get("plan") or name},
+           "planLimits": limits_view(limits, now), "footer": {"text": footer}}
     days = usage.daily_totals(requests)
     start = grid_start(today)
     in_window = {d: v for d, v in days.items() if start <= d <= today}
-    total = sum(v[0] for v in in_window.values())
-    all_time = sum(v[0] for v in days.values())
-    first = min(days) if days else None
+    ids["gridUsage"] = period_usage(days, start, today)
+    if days:
+        ids["gridUsage"]["tooltip"] += " · All time: " + period_usage(days, min(days), today)["text"]
+    ids["cycleUsage"] = subscription_usage(days, today, provider)
+    ids["weekUsage"] = period_usage(days, today - timedelta(days=today.weekday()), today)
+    ids["monthUsage"] = period_usage(days, today.replace(day=1), today)
 
     streak = usage.current_streak(days, today)
     ids["streakLabel"] = {
         "text": f"🔥 {streak}" if streak else "",
         "tooltip": f"{streak}-day streak" if streak else "",
     }
-    ids["costLabel"] = {
-        "text": money(total),
-        "tooltip": (f"All time: {money(all_time)} since {first:%b} {first.day}, {first.year}" if first else ""),
-    }
-    ids["weeksLabel"] = {"text": f"{WEEKS} weeks"}
     ids["activeDays"] = {"text": str(len(in_window))}
     if in_window:
-        busiest = max(in_window, key=lambda d: in_window[d][0])
-        ids["busiestDay"] = {"text": f"{short_date(busiest)} · {money(in_window[busiest][0])}"}
+        busiest = max(in_window, key=lambda d: (in_window[d].cost, in_window[d].count, d))
+        day = in_window[busiest]
+        ids["busiestDay"] = {"text": f"{short_date(busiest)} · {cost_label(day.cost, day.count, day.unpriced, compact=True)}",
+                             "tooltip": "Highest known estimated cost in the activity grid"}
     else:
         ids["busiestDay"] = {"text": "–"}
     t = days.get(today)
-    ids["todayLabel"] = {"text": f"{money(t[0])} · {t[1]:,} req" if t else "–"}
+    ids["todayLabel"] = {"text": f"{cost_label(t.cost, t.count, t.unpriced, compact=True)} · {t.count:,} req" if t else "–"}
 
-    if zstd_missing:
-        ids["footer"] = {"text": "Some Codex sessions are compressed: install zstd (brew install zstd) to count them"}
-    elif limits and limits.get("updated_at"):
-        updated = ago(now - float(limits["updated_at"]))
-        ids["footer"] = {"text": f"Updated {updated} (limits from {LIMITS_SOURCE[tool]}, cost is an API-price estimate)"}
-    elif tool == "codex":
-        ids["footer"] = {"text": "No limits yet: Codex records them with each request · cost is an API-price estimate"}
-    else:
-        ids["footer"] = {
-            "text": "No limits yet: they appear once Claude Code's status line runs (Pro/Max plans) · cost is an API-price estimate"
-        }
+    ids["heatmap"] = heatmap_view(cells(days, today), today)
 
-    variables = {"tool": tool, "usage_url": USAGE_URLS[tool]}
-    props = cells(days, today)
+    def populate(component):
+        key = component.pop("id", None)
+        if key in ids:
+            component.update(ids[key])
+        if key:
+            component["id"] = f"{provider}_{key}"
+        for child in component.get("components", []):
+            populate(child)
+
+    components = json.loads(Path(__file__).with_name("provider.json").read_text())
+    for component in components:
+        populate(component)
+    return {"type": "view", "id": provider, "layout": "inline", "direction": "vertical",
+            "spacing": 8, "components": components}
+
+
+def safe_panel(provider):
+    try:
+        return provider_panel(provider)
+    except Exception as exc:
+        return {"type": "label", "text": f"{NAMES[provider]} Usage · {type(exc).__name__}: {exc}"}
+
+
+def select_action(provider, other, codex_selected, claude_selected):
+    # Alfred captures action variables before applying the update. A rapid second
+    # Tab therefore sees the selection made by the first key event.
+    return {"type": "json", "variables": {
+        "target": provider, "alternate": other, "choose_codex": codex_selected,
+        "choose_claude": claude_selected,
+    }, "src": {
+        "variables": {"tool": "{var:target}", "other_provider": "{var:alternate}",
+                      "codex_selected": "{var:choose_codex}", "claude_selected": "{var:choose_claude}"},
+        "update": {"ids": {
+            "page_codex": {"hidden": "{var:choose_claude}"},
+            "page_claude": {"hidden": "{var:choose_codex}"},
+            "tab_codex": {"bordered": "{var:choose_codex}"},
+            "tab_claude": {"bordered": "{var:choose_claude}"},
+        }},
+    }}
+
+
+def tab_strip(order, active):
+    tabs = []
+    for index, provider in enumerate(order):
+        action = select_action(provider, order[1 - index],
+                               int(provider == "codex"), int(provider == "claude"))
+        tabs.append({
+            "type": "button", "text": NAMES[provider], "id": f"tab_{provider}",
+            "bordered": provider == active, "bordershape": "capsule", "font": {"size": 14},
+            "constraints": {"size": {"width": 108 if provider == "claude" else 74}},
+            "shortcut": f"⌘{index + 1}", "tooltip": f"{NAMES[provider]} (⌘{index + 1}) · Tab to switch",
+            "events": [{"triggers": "actioned", "action": action}],
+        })
+    return {"type": "view", "layout": "inline", "direction": "horizontal", "spacing": 4,
+            "components": tabs}
+
+
+def initial_view(order, active):
+    pages = []
+    for provider in order:
+        # Refresh replaces only the inner content. Its response can never unhide
+        # a page or change the currently selected provider.
+        loading = {"type": "label", "id": provider, "text": f"Loading {NAMES[provider]} usage…"}
+        pages.append({"type": "view", "layout": "stack", "id": f"page_{provider}",
+                      "hidden": provider != active, "components": [loading]})
+    shortcuts = [
+        {"shortcut": "⌘R", "action": {"type": "script", "src": "render",
+                                     "args": ["refresh", "{var:tool}"], "async": True}},
+        {"shortcut": "↩", "action": {"type": "script", "src": "render",
+                                    "args": ["open", "{var:tool}"]}},
+    ]
+    view = {"type": "view", "id": "providers", "layout": "inline", "direction": "vertical",
+            "focus": True, "focusable": True, "shortcuts": shortcuts,
+            "spacing": 10, "components": [{"type": "view", "layout": "stack", "components": pages}]}
+    variables = {"tool": active}
+    if len(order) == 2:
+        view["components"].insert(0, tab_strip(order, active))
+        variables.update(other_provider=next(p for p in order if p != active), codex_selected=int(active == "codex"),
+                         claude_selected=int(active == "claude"))
+        shortcuts.append({
+            "shortcut": "⇥", "action": select_action("{var:other_provider}", "{var:tool}",
+                                                     "{var:claude_selected}", "{var:codex_selected}")})
+    return {"variables": variables, "replace": {"ids": {"providers": view}}}
+
+
+def panel_content(provider, show_title):
+    panel = safe_panel(provider)
+    panel["id"] = provider
+    if not show_title and panel.get("components"):
+        panel["components"] = [c for c in panel["components"] if c.get("id") != f"{provider}_title"]
+    return panel
+
+
+def replace_panels(panels):
+    # Embedded Alfred windows keep their initial height after replacing content.
+    # Refit after the new panels are installed, keeping the user's theme width.
+    return {"replace": {"ids": panels}, "window": {"resize": {"height": "auto"}}}
+
+
+def build(mode: str, requested: str = "") -> dict:
+    setting = os.environ.get("usage_providers") or "remember"
+    order = ORDERS.get(setting, ORDERS["claude_codex"])
     if mode == "preload":
-        return {"variables": variables, "update": {"ids": ids}, "replace": {"ids": {"heatmap": heatmap_view(props, today)}}}
-    for i, p in enumerate(props):
-        ids[f"cell{i}"] = p
-    # Months shift when a new week starts while the window is open.
-    return {
-        "variables": variables,
-        "update": {"relayout": True, "ids": ids},
-        "replace": {"ids": {"monthRow": month_row(today)}},
-    }
-
-
-def pick_tool(mode: str) -> str:
-    current = os.environ.get("tool") if os.environ.get("tool") in TOOLS else "claude"
-    if len(sys.argv) > 2 and sys.argv[2] in TOOLS:
-        return sys.argv[2]
-    # "usage codex" / "usage claude" picks the tab at launch; later pulses follow the tab you're on.
-    launch = (os.environ.get("launch_tool") or "").strip().lower()
-    if mode == "preload" and launch in TOOLS:
-        return launch
-    if mode == "toggle":
-        return "codex" if current == "claude" else "claude"
-    return current
+        preferred = os.environ.get("tool") if setting == "remember" else order[0]
+        launch = os.environ.get("launch_tool", "").strip().lower()
+        active = launch if launch in order else preferred
+        return initial_view(order, active if active in order else order[0])
+    if mode == "pulse" and len(order) == 2:
+        # Both resident pages stay current even when one is hidden.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            panels = pool.map(panel_content, order, (False, False))
+            return replace_panels(dict(zip(order, panels)))
+    active = requested or order[0]
+    if active not in order:
+        return {}
+    if mode == "open":
+        return {"open": {"type": "url", "src": URLS[active]}, "finish": {}}
+    if mode not in ("load", "pulse", "refresh"):
+        return {}
+    return replace_panels({active: panel_content(active, len(order) == 1)})
 
 
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "preload"
-    try:
-        out = build(mode, pick_tool(mode))
-    except Exception as exc:  # show the problem in the UI rather than an empty window
-        out = {"update": {"ids": {"footer": {"text": f"Error: {type(exc).__name__}: {exc}"}}}}
+    requested = sys.argv[2] if len(sys.argv) > 2 else ""
+    out = build(mode, requested)
     print(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
 
 

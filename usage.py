@@ -11,13 +11,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
+from dataclasses import dataclass
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # Bump when prices or parsing change, so cached per-file costs are recomputed.
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 
 # (model id pattern, input, output, cache read) in USD per million tokens, first match wins.
 # Cache writes are priced from input: 1.25x for the 5-minute TTL, 2x for the 1-hour TTL.
@@ -114,7 +117,7 @@ def _parse_lines(chunk: bytes, entries: Dict[str, list], rejections: List[list])
             rec = json.loads(raw)
         except ValueError:
             continue
-        if rec.get("type") != "assistant":
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
         quota = rec.get("quotaLimits")
         if rec.get("isApiErrorMessage") and isinstance(quota, dict) and quota.get("status") == "rejected":
@@ -134,8 +137,8 @@ def _parse_lines(chunk: bytes, entries: Dict[str, list], rejections: List[list])
             continue
         # One API response is written as several lines (one per content block) sharing id + requestId.
         key = f"{msg.get('id', '')}:{rec.get('requestId', '')}"
-        if key not in entries:
-            entries[key] = [ts, round(request_cost(model, usage), 6)]
+        cost = request_cost(model, usage) if price_for(model) else None
+        merge_request(entries, key, ts, round(cost, 6) if cost is not None else None)
 
 
 def _scan_file(path: Path, prev: Optional[dict]) -> dict:
@@ -167,7 +170,7 @@ def cached_scan(name: str, version: int, root: Path, paths, scan) -> Dict[str, d
     cache_path = cache_dir() / f"{name}.json"
     try:
         cache = json.loads(cache_path.read_text())
-        if cache.get("v") != version or cache.get("root") != str(root):
+        if not isinstance(cache, dict) or not isinstance(cache.get("files"), dict) or cache.get("v") != version or cache.get("root") != str(root):
             cache = {}
     except (OSError, ValueError):
         cache = {}
@@ -181,19 +184,32 @@ def cached_scan(name: str, version: int, root: Path, paths, scan) -> Dict[str, d
             continue
 
     if files != old_files:
-        tmp = cache_path.with_suffix(".tmp")
+        tmp = cache_path.with_suffix(f".{os.getpid()}.tmp")
         try:
             tmp.write_text(json.dumps({"v": version, "root": str(root), "files": files}, separators=(",", ":")))
             os.replace(tmp, cache_path)
         except OSError:
             pass
+        finally:
+            tmp.unlink(missing_ok=True)
     return files
+
+
+def merge_request(entries: dict, key: str, ts: int, cost: Optional[float]) -> None:
+    """Keep the first timestamp and fullest known cost across duplicate response snapshots."""
+    old = entries.get(key)
+    if old is not None:
+        ts = min(ts, old[0])
+        if old[1] is not None and (cost is None or old[1] > cost):
+            cost = old[1]
+    entries[key] = [ts, cost]
 
 
 def merge_entries(files: Dict[str, dict]) -> Dict[str, list]:
     merged: Dict[str, list] = {}
     for info in files.values():
-        merged.update(info["e"])  # resumed / forked sessions copy requests: same key, counted once
+        for key, (ts, cost) in info["e"].items():
+            merge_request(merged, key, ts, cost)
     return merged
 
 
@@ -209,25 +225,36 @@ def collect_requests(cfg: Optional[Path] = None) -> Dict[str, list]:
     return collect(cfg)[0]
 
 
-def daily_totals(requests: Dict[str, list]) -> Dict[date, List[float]]:
-    """{local date: [cost, request count]}"""
-    days: Dict[date, List[float]] = {}
+@dataclass
+class DailyUsage:
+    cost: float = 0.0
+    count: int = 0
+    unpriced: int = 0
+
+
+def daily_totals(requests: Dict[str, list]) -> Dict[date, DailyUsage]:
+    days: Dict[date, DailyUsage] = {}
     for ts, cost in requests.values():
-        d = datetime.fromtimestamp(ts).date()
-        slot = days.setdefault(d, [0.0, 0])
-        slot[0] += cost
-        slot[1] += 1
+        day = datetime.fromtimestamp(ts).date()
+        if day not in days:
+            days[day] = DailyUsage()
+        slot = days[day]
+        slot.count += 1
+        if cost is None:
+            slot.unpriced += 1
+        else:
+            slot.cost += cost
     return days
 
 
-def current_streak(days: Dict[date, List[float]], today: date) -> int:
-    """Consecutive active days ending today (or yesterday, while today has no activity yet)."""
-    d = today if today in days else today - timedelta(days=1)
-    n = 0
-    while d in days:
-        n += 1
-        d -= timedelta(days=1)
-    return n
+def current_streak(days: Dict[date, DailyUsage], today: date) -> int:
+    """Count consecutive active days ending today or yesterday."""
+    day = today if today in days else today - timedelta(days=1)
+    count = 0
+    while day in days:
+        count += 1
+        day -= timedelta(days=1)
+    return count
 
 
 # ---------------------------------------------------------------- limits
@@ -272,3 +299,51 @@ def load_limits(cfg: Optional[Path] = None, rejections: Optional[List[list]] = N
 
 def now() -> float:
     return time.time()
+
+
+def account_limits(cfg: Path):
+    search = os.pathsep.join((str(Path.home() / ".local/bin"), os.environ.get("PATH", ""),
+                              "/opt/homebrew/bin", "/usr/local/bin"))
+    cli = shutil.which("claude", path=search)
+    if not cli:
+        return None
+    # Control requests only. No prompt, model call or persistent session.
+    commands = [{"subtype": "initialize"}, {"subtype": "get_usage", "skip_behaviors": True}]
+    stream = "".join(json.dumps({"type": "control_request", "request_id": c["subtype"],
+                                 "request": c}) + "\n" for c in commands)
+    try:
+        result = subprocess.run([cli, "-p", "--safe-mode", "--no-session-persistence", "--verbose",
+                                 "--input-format", "stream-json", "--output-format", "stream-json"],
+                                env={**os.environ, "CLAUDE_CONFIG_DIR": str(cfg)},
+                                input=stream, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=9)
+        for line in result.stdout.splitlines():
+            packet = json.loads(line)
+            if not isinstance(packet, dict) or not isinstance(packet.get("response"), dict):
+                continue
+            reply = packet["response"]
+            if packet.get("type") == "control_response" and reply.get("request_id") == "get_usage" and reply.get("subtype") == "success":
+                return normalise_limits(reply.get("response") or {})
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def normalise_limits(data):
+    if not isinstance(data, dict):
+        return None
+    rates = data.get("rate_limits") or {}
+    if not isinstance(rates, dict):
+        return None
+    windows = []
+    buckets = [(300, None, rates.get("five_hour")), (10080, None, rates.get("seven_day")),
+               (10080, "Weekly · Opus", rates.get("seven_day_opus")),
+               (10080, "Weekly · Sonnet", rates.get("seven_day_sonnet")),
+               (10080, "Weekly · OAuth apps", rates.get("seven_day_oauth_apps"))]
+    for item in rates.get("model_scoped") or []:
+        if isinstance(item, dict) and item.get("display_name"):
+            buckets.append((10080, "Weekly · " + item["display_name"], item))
+    for minutes, label, item in buckets:
+        if isinstance(item, dict) and isinstance(item.get("utilization"), (int, float)):
+            windows.append({"minutes": minutes, "label": label, "used_percentage": item["utilization"],
+                            "resets_at": _epoch(item.get("resets_at"))})
+    return {"windows": windows, "plan": data.get("subscription_type")}

@@ -1,0 +1,150 @@
+[
+        {
+          "id": "title",
+          "type": "label",
+          "text": "Codex Usage",
+          "font": { "size": 18, "weight": "bold" }
+        },
+
+        {
+          "id": "planLimits",
+          "type": "view",
+          "layout": "inline",
+          "direction": "vertical",
+          "components": []
+        },
+
+        {
+          "type": "view",
+          "layout": "border",
+          "constraints": { "insets": { "top": 6 } },
+          "components": [
+            {
+              "constraints": { "region": "left" },
+              "type": "label",
+              "text": "Activity · 13 weeks",
+              "font": { "size": 18, "weight": "bold" }
+            },
+            {
+              "constraints": { "region": "right", "position": "centre" },
+              "id": "streakLabel",
+              "type": "label",
+              "text": "",
+              "textalign": "right",
+              "colour": "systemOrangeColor",
+              "font": { "size": 15, "weight": "medium", "monospaced": "digits" }
+            }
+          ]
+        },
+
+        {
+          "type": "view",
+          "layout": "inline",
+          "direction": "horizontal",
+          "spacing": 24,
+          "constraints": { "position": "centre" },
+          "components": [
+            {
+              "id": "heatmap",
+              "type": "view",
+              "layout": "border",
+              "constraints": { "size": { "width": 261, "height": 139 }, "position": "centre" },
+              "components": []
+            },
+            {
+              "type": "view",
+              "layout": "inline",
+              "direction": "vertical",
+              "spacing": 2,
+              "constraints": { "position": "centre" },
+              "components": [
+                {
+                  "type": "label",
+                  "text": "Usage estimates",
+                  "font": { "size": 13, "weight": "semibold" }
+                },
+                {
+                  "type": "view",
+                  "layout": "form",
+                  "spacing": 2,
+                  "components": [
+                    { "type": "label", "text": "Last 13 weeks", "colour": "secondaryLabelColor" },
+                    { "type": "label", "id": "gridUsage", "text": "–", "textalign": "right", "font": { "monospaced": "digits" } },
+                    { "type": "label", "text": "Subscription cycle", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "cycleUsage",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "weight": "semibold", "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    },
+                    { "type": "label", "text": "This week", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "weekUsage",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    },
+                    { "type": "label", "text": "This month", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "monthUsage",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    }
+                  ]
+                },
+                {
+                  "type": "view",
+                  "layout": "form",
+                  "spacing": 2,
+                  "constraints": { "insets": { "top": 4 } },
+                  "components": [
+                    { "type": "label", "text": "Active days", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "activeDays",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    },
+                    { "type": "label", "text": "Busiest day", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "busiestDay",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    },
+                    { "type": "label", "text": "Today", "colour": "secondaryLabelColor" },
+                    {
+                      "id": "todayLabel",
+                      "type": "label",
+                      "text": "–",
+                      "textalign": "right",
+                      "font": { "monospaced": "digits" },
+                      "constraints": { "insets": { "left": 16 } }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+
+        {
+          "id": "footer",
+          "type": "label",
+          "text": "",
+          "colour": "secondaryLabelColor",
+          "font": { "size": 12 },
+          "constraints": { "insets": { "top": 4 } }
+        }
+      ]

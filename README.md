@@ -1,102 +1,74 @@
 # Claude Usage for Alfred
 
-An [Alfred](https://www.alfredapp.com) workflow that shows your Claude Code and Codex plan limits, a 13-week activity heatmap, and what your usage would cost at API list prices, in an Alfred UI window.
+**English** · [简体中文](README.zh-CN.md)
 
-> Unofficial. Not affiliated with or endorsed by Anthropic or OpenAI.
+Open Alfred and type `usage` to see Claude Code and Codex plan limits, reset times, and 13 weeks of activity. The panel also estimates what your locally recorded requests would cost at API list prices.
 
-## Features
+[Download the Alfred workflow](https://github.com/yinan-c/claude-usage-alfred/releases/download/v1.1.0-rc.1/Claude-Usage.alfredworkflow) · [Release notes](https://github.com/yinan-c/claude-usage-alfred/releases/tag/v1.1.0-rc.1)
 
-- **Limits:** how much of your 5-hour session and weekly limits you've used, and when each window resets
-- **Activity:** a 13-week heatmap of your usage, with your current streak 🔥
-- **Cost:** what the same tokens would cost at API list prices. This is an estimate; your plan is not billed this way. Hover a day to see its cost and request count.
-- **Claude and Codex tabs:** the tab you viewed last opens next time
+## Install and open
 
-## Requirements
+1. On a Mac with Alfred and the Powerpack, download **Claude-Usage.alfredworkflow** from the release assets.
+2. Double-click the file and choose **Import** in Alfred. If Alfred already has this workflow, choose the update option it offers.
+3. Open Alfred, type `usage`, and press Return. Select a tab to see that provider’s data. To open Codex directly next time, type `usage codex`. For Claude Code, use `usage claude`.
 
-- macOS with Alfred and the Powerpack
-- `/usr/bin/python3`, which ships with the Command Line Tools (`xcode-select --install`)
-- Optional: `zstd` (`brew install zstd`) to count compressed Codex sessions
+The workflow uses `/usr/bin/python3`. If macOS prompts for Command Line Tools, run `xcode-select --install` and reopen the workflow after installation. Codex reads plain session logs immediately. For compressed `.jsonl.zst` logs, install `zstd` with `brew install zstd`.
 
-## Install
+## Use the panel
 
-Clone this repository into Alfred's workflows folder:
-
-```sh
-cd ~/"Library/Application Support/Alfred/Alfred.alfredpreferences/workflows"
-git clone <this repository's URL> claude-code-usage
-```
-
-If you sync your Alfred preferences, use the `workflows` folder inside your synced `Alfred.alfredpreferences` instead.
-
-Or build a package and double-click it to import:
-
-```sh
-git archive --format=zip -o Claude-Usage.alfredworkflow HEAD
-```
-
-### Set up the status line (Claude limits)
-
-Claude Code reports plan limits only to its status line, and nothing else saves them. This workflow ships `statusline.py`, which prints a compact status line and saves the latest limits to `~/.claude/usage-limits.json`.
-
-```sh
-cp statusline.py ~/.claude/statusline-usage.py
-```
-
-Then add this to `~/.claude/settings.json`:
-
-```json
-"statusLine": {"type": "command", "command": "/usr/bin/python3 ~/.claude/statusline-usage.py"}
-```
-
-To keep a status line you already have, pass its command in `CLAUDE_USAGE_STATUSLINE_CMD`. The script still saves your limits, then hands the same input to your command and prints its output:
-
-```json
-"statusLine": {"type": "command", "command": "CLAUDE_USAGE_STATUSLINE_CMD='~/.claude/my-statusline.sh' /usr/bin/python3 ~/.claude/statusline-usage.py"}
-```
-
-Codex needs no setup.
-
-## Usage
-
-| Action | What it does |
+| Action | Result |
 | --- | --- |
-| `usage` | Open the window (the keyword can be changed in the workflow's configuration) |
-| `usage claude` / `usage codex` | Open on that tab |
-| ⌘1 / ⌘2 or ⇥ | Switch tabs |
-| ↩ | Open the usage settings page on claude.ai or chatgpt.com |
-| ⌘R | Refresh (the window also refreshes every 30 seconds while open) |
+| Click a tab or press Tab | Switch between enabled providers while data loads in the background |
+| ⌘1 or ⌘2 | Select the first or second visible tab |
+| Hover over a heatmap square | See that day’s estimated cost and request count |
+| ⌘R | Refresh the current provider. Enabled providers also refresh every 30 seconds while the panel is open |
+| Return | Open the selected provider’s account usage page |
 
-You can also set a hotkey on the workflow's Hotkey trigger, or open the window with the External Trigger `show`.
+Open **Alfred Preferences → Workflows → Claude Usage → Configure Workflow** to change the keyword, data folders or **Show providers**. The default reopens the last viewed tab. You can also choose a fixed order or show just one provider.
 
-## Configuration
+**Quota and activity measure different things.** A weekly bar at 26% means the provider reported 26% of that quota used. The heatmap counts local CLI activity. If Codex reports only a weekly window, the panel shows only that window. After a reset, the panel waits for a new reading before showing a percentage.
 
-Open the workflow in Alfred and click **Configure Workflow**:
+**Cost estimates** cover the current week (from Monday), calendar month and optional subscription cycle. Enter the cycle start and renewal dates for each provider in `YYYY-MM-DD` format. For example, June 10 to July 10 includes June 10 through July 9. A `+` after a dollar amount means some requests have no known price. Hover over a period total for the covered dates.
 
-- **Keyword:** defaults to `usage`
-- **Claude config folder:** defaults to `~/.claude`. Change it only if you use `CLAUDE_CONFIG_DIR`.
-- **Codex folder:** defaults to `~/.codex`. Change it only if you use `CODEX_HOME`.
+## Set up Claude quota readings
 
-## Where the numbers come from
+Local Claude activity appears from transcripts in `~/.claude/projects`. For quota readings, choose either method below.
 
-**Claude**
+- **Use the signed-in CLI.** Enable **Live account limits** in Configure Workflow and refresh. This setting allows each enabled provider’s CLI to contact its account service. If the CLI cannot return limits, the workflow uses available local readings.
+- **Use the Claude status line.** To collect readings locally with the default settings, install the included status line script once:
 
-- Limits come from the status line (see above). They are as fresh as your last Claude Code message, so usage from claude.ai or the desktop app shows up the next time Claude Code talks to the API. Limits exist only on Pro, Max and Ultra plans.
-- Activity and cost are read from Claude Code transcripts in `~/.claude/projects`, where every API response records its model and token counts. Requests are de-duplicated across resumed and forked sessions, and priced with input, output, cache-write (5-minute and 1-hour) and cache-read rates per model, including fast mode and web searches.
+  1. In Alfred Preferences, right-click **Claude Usage** and choose **Open in Finder**. In that folder, locate `statusline.py`. From a terminal opened in the same folder, run:
 
-**Codex**
+     ```sh
+     mkdir -p ~/.claude
+     cp statusline.py ~/.claude/statusline-usage.py
+     ```
 
-- Limits, activity and cost all come from Codex's session files in `~/.codex/sessions`. Each API response records its tokens, and the plan limits come with it. Limits are as of your last Codex request. Costs use OpenAI API rates.
+  2. In `~/.claude/settings.json`, add the following property to the existing JSON object. Keep your other settings. If you already use a custom status line, set `CLAUDE_USAGE_STATUSLINE_CMD` in the command to chain it, for example `CLAUDE_USAGE_STATUSLINE_CMD='my-status-command' /usr/bin/python3 ~/.claude/statusline-usage.py`.
 
-## Privacy
+     ```json
+     {
+       "statusLine": {
+         "type": "command",
+         "command": "/usr/bin/python3 ~/.claude/statusline-usage.py"
+       }
+     }
+     ```
 
-- Everything runs locally. The workflow makes no network requests; ↩ just opens your usage settings page in the browser.
-- From transcripts and session files it reads only timestamps, model names, token counts and request IDs, never message content.
-- It writes only two things: `~/.claude/usage-limits.json` (from the status line script) and a cache of per-file totals in Alfred's workflow cache folder.
+  3. Start a Claude Code session and send a message. When the status line receives quota data, it saves the reading in `~/.claude/usage-limits.json`. Open `usage claude` in Alfred and press ⌘R.
 
-## Updating prices
+If you use a custom Claude configuration directory, set **Claude config folder** to that location and adjust the script and settings paths accordingly. The Codex equivalent is **Codex folder**, which defaults to `~/.codex` and includes both active and archived sessions.
 
-Prices are hard-coded in the `PRICES` tables in `usage.py` (Claude) and `codex.py` (Codex), in USD per million tokens. When you change a price or how files are parsed, bump `CACHE_VERSION` in the same file so cached totals are recomputed.
+## Data and development
 
-## License
+With live limits off, the workflow reads local session files and caches per-file totals in Alfred’s workflow cache. The panel shows API-equivalent costs; your subscription invoice may differ. This is an independent project, unaffiliated with Anthropic and OpenAI.
 
-[MIT](LICENSE)
+To run the regression tests from a checkout:
+
+```sh
+/usr/bin/python3 -m unittest discover -s tests -v
+```
+
+Model rates are in `usage.py` and `codex.py`. Bump the corresponding `CACHE_VERSION` when changing prices or parsing so cached totals are recomputed.
+
+[MIT License](LICENSE)

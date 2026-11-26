@@ -3,218 +3,40 @@
   "log": { "level": "warning", "internal": true },
   "iconpath": "../icon.png",
   "variablesconfig": {
-    "claude_config_dir": { "src": "variable", "scriptenv": true },
-    "codex_home": { "src": "variable", "scriptenv": true },
     "tool": { "default": "claude", "persist": true, "scriptenv": true },
-    "launch_tool": { "src": "args[0]", "scriptenv": true }
-  },
-  "variables": {
-    "usage_url": "https://claude.ai/settings/usage"
+    "launch_tool": { "src": "args[0]", "scriptenv": true },
+    "claude_config_dir": { "src": "variable", "scriptenv": true },
+    "live_limits": { "src": "variable", "scriptenv": true },
+    "usage_providers": { "src": "variable", "scriptenv": true },
+    "claude_subscription_cycle_start": { "src": "variable", "scriptenv": true },
+    "claude_subscription_cycle_end": { "src": "variable", "scriptenv": true },
+    "codex_home": { "src": "variable", "scriptenv": true },
+    "subscription_cycle_start": { "src": "variable", "scriptenv": true },
+    "subscription_cycle_end": { "src": "variable", "scriptenv": true }
   },
   "pulse": {
     "src": "render",
-    "args": "pulse",
+    "args": ["pulse"],
     "interval": 30,
     "intervalmode": "delay"
   },
   "window": {
-    "title": "Claude usage",
+    "title": "Codex & Claude Code Usage",
     "root": {
       "type": "view",
       "layout": "inline",
       "direction": "vertical",
       "padding": 16,
       "spacing": 8,
-      "focusable": true,
-      "focus": true,
       "events": [
-        { "triggers": "preload", "action": { "type": "script", "src": "render", "args": "preload" } }
-      ],
-      "shortcuts": [
-        { "shortcut": "⌘R", "action": { "type": "script", "src": "render", "args": "refresh" } },
-        { "shortcut": "⇥", "action": { "type": "script", "src": "render", "args": "toggle" } },
-        {
-          "shortcut": "↩",
-          "action": {
-            "type": "json",
-            "src": { "open": { "type": "url", "src": "{var:usage_url}" }, "finish": {} }
-          }
-        }
+        { "triggers": "preload", "action": { "type": "script", "src": "render", "args": "preload" } },
+        { "triggers": "launched", "action": [
+          { "type": "script", "src": "render", "args": ["load", "codex"], "async": true },
+          { "type": "script", "src": "render", "args": ["load", "claude"], "async": true }
+        ] }
       ],
       "components": [
-        {
-          "type": "view",
-          "layout": "border",
-          "components": [
-            {
-              "constraints": { "region": "left" },
-              "id": "title",
-              "type": "label",
-              "text": "Claude usage",
-              "font": { "size": 18, "weight": "bold" }
-            },
-            {
-              "constraints": { "region": "right", "position": "centre" },
-              "type": "view",
-              "layout": "inline",
-              "direction": "horizontal",
-              "spacing": 2,
-              "components": [
-                {
-                  "id": "tabClaude",
-                  "type": "button",
-                  "text": "Claude",
-                  "shortcut": "⌘1",
-                  "tooltip": "Claude ⌘1 · ⇥ switch · ↩ open usage settings · ⌘R refresh",
-                  "font": { "size": 12, "weight": "semibold" },
-                  "events": [
-                    { "triggers": "actioned", "action": { "type": "script", "src": "render", "args": ["switch", "claude"] } }
-                  ]
-                },
-                {
-                  "id": "tabCodex",
-                  "type": "button",
-                  "text": "Codex",
-                  "shortcut": "⌘2",
-                  "bordered": false,
-                  "contenttintcolour": "secondaryLabelColor",
-                  "tooltip": "Codex ⌘2 · ⇥ switch · ↩ open usage settings · ⌘R refresh",
-                  "font": { "size": 12 },
-                  "events": [
-                    { "triggers": "actioned", "action": { "type": "script", "src": "render", "args": ["switch", "codex"] } }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-
-        { "id": "fiveLabel", "type": "label", "text": "5-hour session: …", "font": { "size": 13 } },
-        {
-          "id": "fiveBar",
-          "type": "progress",
-          "style": "linear",
-          "thickness": 8,
-          "progress": 0.0,
-          "colour": "systemGreenColor",
-          "background": { "light": "#0000001f", "dark": "#00000059" }
-        },
-        {
-          "id": "weekLabel",
-          "type": "label",
-          "text": "Weekly: …",
-          "font": { "size": 13 },
-          "constraints": { "insets": { "top": 4 } }
-        },
-        {
-          "id": "weekBar",
-          "type": "progress",
-          "style": "linear",
-          "thickness": 8,
-          "progress": 0.0,
-          "colour": "systemGreenColor",
-          "background": { "light": "#0000001f", "dark": "#00000059" }
-        },
-
-        {
-          "type": "view",
-          "layout": "border",
-          "constraints": { "insets": { "top": 6 } },
-          "components": [
-            {
-              "constraints": { "region": "left" },
-              "type": "label",
-              "text": "Activity",
-              "font": { "size": 18, "weight": "bold" }
-            },
-            {
-              "constraints": { "region": "right", "position": "centre" },
-              "id": "streakLabel",
-              "type": "label",
-              "text": "",
-              "textalign": "right",
-              "colour": "systemOrangeColor",
-              "font": { "size": 15, "weight": "medium", "monospaced": "digits" }
-            }
-          ]
-        },
-
-        {
-          "type": "view",
-          "layout": "inline",
-          "direction": "horizontal",
-          "spacing": 24,
-          "constraints": { "position": "centre" },
-          "components": [
-            {
-              "id": "heatmap",
-              "type": "view",
-              "layout": "border",
-              "constraints": { "size": { "width": 261, "height": 139 }, "position": "centre" },
-              "components": []
-            },
-            {
-              "type": "view",
-              "layout": "inline",
-              "direction": "vertical",
-              "spacing": 2,
-              "constraints": { "position": "centre" },
-              "components": [
-                {
-                  "id": "costLabel",
-                  "type": "label",
-                  "text": "…",
-                  "font": { "size": 18, "weight": "bold", "monospaced": "digits" }
-                },
-                { "id": "weeksLabel", "type": "label", "text": "13 weeks", "colour": "secondaryLabelColor" },
-                {
-                  "type": "view",
-                  "layout": "form",
-                  "spacing": 2,
-                  "constraints": { "insets": { "top": 4 } },
-                  "components": [
-                    { "type": "label", "text": "Active days", "colour": "secondaryLabelColor" },
-                    {
-                      "id": "activeDays",
-                      "type": "label",
-                      "text": "–",
-                      "textalign": "right",
-                      "font": { "monospaced": "digits" },
-                      "constraints": { "insets": { "left": 16 } }
-                    },
-                    { "type": "label", "text": "Busiest day", "colour": "secondaryLabelColor" },
-                    {
-                      "id": "busiestDay",
-                      "type": "label",
-                      "text": "–",
-                      "textalign": "right",
-                      "font": { "monospaced": "digits" },
-                      "constraints": { "insets": { "left": 16 } }
-                    },
-                    { "type": "label", "text": "Today", "colour": "secondaryLabelColor" },
-                    {
-                      "id": "todayLabel",
-                      "type": "label",
-                      "text": "–",
-                      "textalign": "right",
-                      "font": { "monospaced": "digits" },
-                      "constraints": { "insets": { "left": 16 } }
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-
-        {
-          "id": "footer",
-          "type": "label",
-          "text": "",
-          "colour": "secondaryLabelColor",
-          "font": { "size": 12 },
-          "constraints": { "insets": { "top": 4 } }
-        }
+        { "id": "providers", "type": "view", "layout": "inline", "direction": "vertical", "spacing": 16, "components": [] }
       ]
     }
   }
